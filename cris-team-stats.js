@@ -442,7 +442,7 @@
   /* ---------- End-to-end driver ---------- */
   async function run(opts) {
     const teamUrl  = opts.teamUrl  || 'https://lme.tf.fau.de/person/';
-    const proxyTpl = opts.proxyTpl || DEFAULT_PROXY;
+    const proxyTpl = opts.proxyTpl;  // undefined → fetchText uses DEFAULT_PROXIES
     const mount    = typeof opts.mount === 'string' ? document.querySelector(opts.mount) : opts.mount;
     const mapping  = opts.mapping  || {};
     if (!mount) throw new Error('cris-team-stats: mount element not found');
