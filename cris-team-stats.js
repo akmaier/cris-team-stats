@@ -56,12 +56,15 @@
     const tpls = Array.isArray(proxyTpl) ? proxyTpl
                : proxyTpl              ? [proxyTpl]
                                         : DEFAULT_PROXIES;
-    let lastErr;
+    const errors = [];
     for (const tpl of tpls) {
       try { return await fetchTextOnce(url, tpl); }
-      catch (e) { lastErr = e; }
+      catch (e) {
+        const short = tpl.replace(/^https?:\/\//, '').split('/')[0];
+        errors.push(short + ': ' + (e.message || e));
+      }
     }
-    throw new Error('All CORS proxies failed for ' + url + ' (last: ' + (lastErr && lastErr.message) + ')');
+    throw new Error('All ' + tpls.length + ' CORS proxy attempt(s) failed for ' + url + ' [' + errors.join(' | ') + ']');
   }
 
   /* ---------- FAU team-page parser ---------- */

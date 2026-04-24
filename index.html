@@ -46,10 +46,13 @@ button to get a copy-pasteable HTML block for your WordPress site.</p>
 
   <details>
     <summary>Advanced</summary>
-    <label for="proxy">CORS proxy (must allow GET and expose <code>Access-Control-Allow-Origin</code>)</label>
-    <input id="proxy" type="text" value="https://api.allorigins.win/get?url={URL}" spellcheck="false">
-    <p class="muted">The <code>{URL}</code> placeholder is replaced with the URL-encoded target URL. For
-      <code>api.allorigins.win/get?url=</code> the library automatically unwraps the JSON envelope.</p>
+    <label for="proxy">CORS proxy (leave empty for built-in fallback chain)</label>
+    <input id="proxy" type="text" value="" placeholder="e.g. https://api.allorigins.win/get?url={URL}" spellcheck="false">
+    <p class="muted">Leave blank to use the library's default fallback chain
+      (<code>allorigins.win</code>, <code>codetabs.com</code>, <code>corsproxy.io</code>).
+      Override with a single template; use <code>{URL}</code> for a URL-encoded placeholder
+      or <code>{URL_RAW}</code> for raw. The JSON envelope from
+      <code>allorigins.win/get</code> is automatically unwrapped.</p>
     <label for="libUrl">cris-team-stats.js URL</label>
     <input id="libUrl" type="text" value="https://cdn.jsdelivr.net/gh/akmaier/cris-team-stats@main/cris-team-stats.js" spellcheck="false">
   </details>
