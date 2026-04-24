@@ -22,24 +22,46 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
-  const DEFAULT_PROXY = 'https://api.allorigins.win/get?url={URL}';
+  // Public CORS proxies are flaky; we try a list in order and fall back on
+  // HTTP errors or network failures. Override via `proxyTpl` (string or
+  // array) when calling `run(...)`.
+  const DEFAULT_PROXIES = [
+    'https://api.allorigins.win/get?url={URL}',
+    'https://api.codetabs.com/v1/proxy/?quest={URL_RAW}',
+    'https://corsproxy.io/?{URL_RAW}',
+  ];
 
   /* ---------- CORS-proxy aware fetcher ---------- */
-  async function fetchText(url, proxyTpl) {
-    proxyTpl = proxyTpl || DEFAULT_PROXY;
-    const proxied = proxyTpl.replace('{URL}', encodeURIComponent(url));
+  // Expands a template. {URL} → URL-encoded; {URL_RAW} → raw URL (some proxies
+  // want it un-encoded).
+  function expandProxy(tpl, url) {
+    return tpl.replace('{URL}', encodeURIComponent(url)).replace('{URL_RAW}', url);
+  }
+  async function fetchTextOnce(url, tpl) {
+    const proxied = expandProxy(tpl, url);
     const res = await fetch(proxied, { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' via ' + tpl);
     const ct = res.headers.get('Content-Type') || '';
     const body = await res.text();
-    // allorigins.win/get wraps in JSON
-    if (proxyTpl.includes('/get?') && ct.includes('application/json')) {
+    // allorigins.win/get wraps in JSON; detect and unwrap.
+    if (tpl.includes('/get?') && (ct.includes('application/json') || body.trimStart().startsWith('{'))) {
       try {
         const env = JSON.parse(body);
         if (env && typeof env.contents === 'string') return env.contents;
       } catch (_) { /* fall through */ }
     }
     return body;
+  }
+  async function fetchText(url, proxyTpl) {
+    const tpls = Array.isArray(proxyTpl) ? proxyTpl
+               : proxyTpl              ? [proxyTpl]
+                                        : DEFAULT_PROXIES;
+    let lastErr;
+    for (const tpl of tpls) {
+      try { return await fetchTextOnce(url, tpl); }
+      catch (e) { lastErr = e; }
+    }
+    throw new Error('All CORS proxies failed for ' + url + ' (last: ' + (lastErr && lastErr.message) + ')');
   }
 
   /* ---------- FAU team-page parser ---------- */
@@ -192,11 +214,15 @@
   // CRIS BibTeX uses "Last, First Middle" and sometimes "First Last". We
   // normalise both the search name and the candidate to lower-case
   // last-name tokens.
+  // Common German academic-title prefixes seen on FAU pages.
+  const TITLE_RX = /\b(prof|priv|pd|apl|univ|em|emer|emeritus|hon|dr|ing|phil|rer|nat|med|habil|mult|hc|h\.c|dipl|msc|m\.sc|bsc|b\.sc|ph\.d|phd|mag|ma|ba|dr\.-ing|drmed|drphil|drrerpol|drrernat|drrernatmed)\b\.?/gi;
   function normaliseName(s) {
     return (s || '')
       .toLowerCase()
       .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')  // strip diacritics
-      .replace(/[^\p{L}\s,\-]/gu, ' ')
+      .replace(TITLE_RX, ' ')                   // strip titles WITH their dots
+      .replace(/[^\p{L}\s,]/gu, ' ')            // then drop remaining punctuation
+      .replace(TITLE_RX, ' ')                   // catch leftovers after punctuation split
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -204,17 +230,18 @@
     n = normaliseName(n);
     if (!n) return '';
     if (n.includes(',')) return n.split(',')[0].trim();
-    const parts = n.split(' ');
-    return parts[parts.length - 1];
+    const parts = n.split(' ').filter(Boolean);
+    return parts[parts.length - 1] || '';
   }
   function firstNameOf(n) {
     n = normaliseName(n);
     if (!n) return '';
     if (n.includes(',')) {
       const rest = n.split(',')[1] || '';
-      return (rest.trim().split(' ')[0] || '');
+      return (rest.trim().split(' ').filter(Boolean)[0] || '');
     }
-    return (n.split(' ')[0] || '');
+    const parts = n.split(' ').filter(Boolean);
+    return parts.length > 1 ? parts[0] : '';
   }
   function nameMatches(bibAuthor, person) {
     const bln = lastNameOf(bibAuthor);
@@ -481,6 +508,6 @@
     computeStats, nameMatches, loadPerson, renderTable,
     // High-level driver
     run,
-    DEFAULT_PROXY,
+    DEFAULT_PROXIES,
   };
 });
