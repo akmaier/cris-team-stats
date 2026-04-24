@@ -30,11 +30,18 @@
   // reliably, whereas codetabs / corsproxy get confused by the double '?'.
   // The X-Return-Format header asks jina to return raw HTML rather than its
   // default markdown rendering.
+  // Every proxy gets a URL-encoded target. Proxies differ only in path
+  // shape and headers. Order matters: cheaper/faster proxies first, jina
+  // last because its free tier rate-limits aggressively.
+  //
+  // Note: codetabs and corsproxy both break when the TARGET contains a
+  // '?' (they see the second '?query=' as their own query string) —
+  // URL-encoding the whole target avoids this.
   const DEFAULT_PROXIES = [
-    { url: 'https://r.jina.ai/{URL_RAW}', headers: { 'X-Return-Format': 'html' } },
     'https://api.allorigins.win/get?url={URL}',
-    'https://api.codetabs.com/v1/proxy/?quest={URL_RAW}',
-    'https://corsproxy.io/?{URL_RAW}',
+    'https://api.codetabs.com/v1/proxy/?quest={URL}',
+    'https://corsproxy.io/?{URL}',
+    { url: 'https://r.jina.ai/{URL}', headers: { 'X-Return-Format': 'html' } },
   ];
 
   /* ---------- CORS-proxy aware fetcher ---------- */
@@ -61,20 +68,36 @@
     }
     return body;
   }
-  async function fetchText(url, proxyTpl) {
+  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+  // Try each proxy in order. If every proxy fails and `retries > 0`, wait
+  // and try the whole list again (exponential backoff). This recovers from
+  // transient rate-limits (jina 429, corsproxy CF 403, allorigins 5xx)
+  // that clear within a few seconds.
+  async function fetchText(url, proxyTpl, opts) {
+    const retries = (opts && opts.retries != null) ? opts.retries : 2;
     const tpls = Array.isArray(proxyTpl) ? proxyTpl
                : proxyTpl              ? [proxyTpl]
                                         : DEFAULT_PROXIES;
-    const errors = [];
-    for (const tpl of tpls) {
-      try { return await fetchTextOnce(url, tpl); }
-      catch (e) {
-        const tplUrl = normaliseProxy(tpl).url;
-        const short = tplUrl.replace(/^https?:\/\//, '').split('/')[0];
-        errors.push(short + ': ' + (e.message || e));
+    let lastErrors = [];
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const errors = [];
+      for (const tpl of tpls) {
+        try { return await fetchTextOnce(url, tpl); }
+        catch (e) {
+          const tplUrl = normaliseProxy(tpl).url;
+          const short = tplUrl.replace(/^https?:\/\//, '').split('/')[0];
+          errors.push(short + ': ' + (e.message || e));
+        }
+      }
+      lastErrors = errors;
+      if (attempt < retries) {
+        // 500ms, 1500ms, ...  Small enough to stay snappy; big enough for
+        // a 429 bucket to refill on most services.
+        await sleep(500 * Math.pow(3, attempt));
       }
     }
-    throw new Error('All ' + tpls.length + ' CORS proxy attempt(s) failed for ' + url + ' [' + errors.join(' | ') + ']');
+    throw new Error('All ' + tpls.length + ' CORS proxy attempt(s) failed for ' + url + ' [' + lastErrors.join(' | ') + ']');
   }
 
   /* ---------- FAU team-page parser ---------- */
