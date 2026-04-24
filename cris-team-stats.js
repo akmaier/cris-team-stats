@@ -23,23 +23,32 @@
   'use strict';
 
   // Public CORS proxies are flaky; we try a list in order and fall back on
-  // HTTP errors or network failures. Override via `proxyTpl` (string or
-  // array) when calling `run(...)`.
+  // HTTP errors or network failures. Override via `proxyTpl` (string, array
+  // of strings, or array of {url, headers}) when calling `run(...)`.
+  //
+  // Why jina first? It handles URLs with query strings (like CRIS /search)
+  // reliably, whereas codetabs / corsproxy get confused by the double '?'.
+  // The X-Return-Format header asks jina to return raw HTML rather than its
+  // default markdown rendering.
   const DEFAULT_PROXIES = [
+    { url: 'https://r.jina.ai/{URL_RAW}', headers: { 'X-Return-Format': 'html' } },
     'https://api.allorigins.win/get?url={URL}',
     'https://api.codetabs.com/v1/proxy/?quest={URL_RAW}',
     'https://corsproxy.io/?{URL_RAW}',
   ];
 
   /* ---------- CORS-proxy aware fetcher ---------- */
-  // Expands a template. {URL} → URL-encoded; {URL_RAW} → raw URL (some proxies
-  // want it un-encoded).
+  // Expands a template. {URL} → URL-encoded; {URL_RAW} → raw URL.
   function expandProxy(tpl, url) {
     return tpl.replace('{URL}', encodeURIComponent(url)).replace('{URL_RAW}', url);
   }
-  async function fetchTextOnce(url, tpl) {
+  function normaliseProxy(p) {
+    return typeof p === 'string' ? { url: p, headers: undefined } : p;
+  }
+  async function fetchTextOnce(url, proxy) {
+    const { url: tpl, headers } = normaliseProxy(proxy);
     const proxied = expandProxy(tpl, url);
-    const res = await fetch(proxied, { cache: 'no-store' });
+    const res = await fetch(proxied, { cache: 'no-store', headers });
     if (!res.ok) throw new Error('HTTP ' + res.status + ' via ' + tpl);
     const ct = res.headers.get('Content-Type') || '';
     const body = await res.text();
@@ -60,7 +69,8 @@
     for (const tpl of tpls) {
       try { return await fetchTextOnce(url, tpl); }
       catch (e) {
-        const short = tpl.replace(/^https?:\/\//, '').split('/')[0];
+        const tplUrl = normaliseProxy(tpl).url;
+        const short = tplUrl.replace(/^https?:\/\//, '').split('/')[0];
         errors.push(short + ': ' + (e.message || e));
       }
     }
@@ -291,6 +301,73 @@
     };
   }
 
+  /* ---------- Name -> CRIS-ID auto-discovery ---------- */
+  // CRIS exposes a public full-text search at /search?query=... that returns
+  // an HTML page with result cards. We extract every /persons/{ID} link and
+  // return them in document order (which is relevance-ranked).
+  // Strip titles but keep original case so the search query reads naturally
+  // (e.g. "Prof. Dr.-Ing. Andreas Maier" -> "Andreas Maier"). CRIS search
+  // is intolerant of the title fluff.
+  function cleanQueryName(full) {
+    // Keep diacritics: CRIS stores names with umlauts (e.g. Nöth) and the
+    // search index matches exact characters. We only strip titles +
+    // punctuation, not letter accents.
+    return (full || '')
+      .replace(TITLE_RX, ' ')
+      .replace(/[^\p{L}\s]/gu, ' ')
+      .replace(TITLE_RX, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  async function searchCrisIds(fullName, proxyTpl) {
+    const q = cleanQueryName(fullName);
+    if (!q) return [];
+    const url = 'https://cris.fau.de/search?query=' + encodeURIComponent(q);
+    let html;
+    try { html = await fetchText(url, proxyTpl); }
+    catch (_) { return []; }
+    const ids = [];
+    const seen = new Set();
+    const rx = /\/persons\/(\d+)\/?/g;
+    let m;
+    while ((m = rx.exec(html)) !== null) {
+      if (!seen.has(m[1])) { seen.add(m[1]); ids.push(m[1]); }
+    }
+    return ids;
+  }
+
+  // Pick the first candidate whose CRIS profile's "Personal Website" link
+  // shares a host with the FAU person URL (and ideally has a matching name).
+  // Falls back to the first candidate if no verifier matches, so the user
+  // still gets a row to review.
+  async function discoverCrisId(person, proxyTpl) {
+    const ids = await searchCrisIds(person.name, proxyTpl);
+    if (!ids.length) return { id: null, confidence: 'none', candidates: [] };
+    let fauHost;
+    try { fauHost = new URL(person.url).host; } catch (_) { fauHost = null; }
+    // Try all candidates. Prefer "high" (name+host match) over "name-only".
+    // The first candidate is the relevance-ranked best guess.
+    const MAX = Math.min(6, ids.length);
+    let fallback = null;
+    for (let i = 0; i < MAX; i++) {
+      const id = ids[i];
+      try {
+        const profHtml = await fetchText('https://cris.fau.de/persons/' + id + '/', proxyTpl);
+        const prof = parseProfilePage(profHtml);
+        const nameOk = prof.heading && nameMatches(prof.heading, person.name);
+        let hostOk = false;
+        if (prof.personalWebsite && fauHost) {
+          try { hostOk = new URL(prof.personalWebsite).host === fauHost; } catch (_) {}
+        }
+        if (nameOk && hostOk) return { id, confidence: 'high', candidates: ids };
+        if (nameOk && !fallback) fallback = { id, confidence: 'name-only', candidates: ids };
+      } catch (_) { /* try next */ }
+    }
+    if (fallback) return fallback;
+    return { id: ids[0], confidence: 'guess', candidates: ids };
+  }
+
   /* ---------- High-level orchestration for one person ---------- */
   async function loadPerson(person, crisId, proxyTpl) {
     const profileUrl = 'https://cris.fau.de/persons/' + crisId + '/';
@@ -393,6 +470,19 @@
             a.target = '_blank';
             a.rel = 'noopener noreferrer';
             td.appendChild(a);
+            if (row.confidence && row.confidence !== 'high') {
+              const em = document.createElement('em');
+              em.textContent = ' (' + row.confidence + ')';
+              em.style.color = '#a60';
+              em.title = 'Auto-discovered; verify manually';
+              td.appendChild(em);
+            }
+          } else if (row.discovering) {
+            const span = document.createElement('span');
+            span.textContent = 'searching…';
+            span.className = 'muted';
+            span.style.color = '#888';
+            td.appendChild(span);
           } else {
             const inp = document.createElement('input');
             inp.type = 'number';
@@ -470,17 +560,46 @@
     };
     renderTable(mount, rows, state);
 
-    // Fetch stats for all rows with a known CRIS ID in parallel (but limited).
-    const CONCURRENCY = 4;
-    const queue = rows.filter((r) => r.crisId);
-    async function worker() {
-      while (queue.length) {
-        const r = queue.shift();
-        await refreshRow(r, proxyTpl);
-        renderTable(mount, rows, state);
+    // Phase 1: fetch stats for rows that already have an ID from the mapping.
+    // Phase 2: auto-discover IDs for the remaining rows via CRIS /search,
+    // then fetch their stats.
+    const autoDiscover = opts.autoDiscover !== false;  // default true
+    const CONCURRENCY  = 4;
+
+    async function workQueue(items, handler) {
+      const q = items.slice();
+      async function worker() {
+        while (q.length) {
+          const r = q.shift();
+          await handler(r);
+          renderTable(mount, rows, state);
+        }
       }
+      await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     }
-    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    await workQueue(rows.filter((r) => r.crisId), (r) => refreshRow(r, proxyTpl));
+
+    if (autoDiscover) {
+      const unknown = rows.filter((r) => !r.crisId);
+      await workQueue(unknown, async (r) => {
+        r.discovering = true; renderTable(mount, rows, state);
+        try {
+          const d = await discoverCrisId(r.person, proxyTpl);
+          r.discovering = false;
+          if (d.id) {
+            r.crisId = d.id;
+            r.confidence = d.confidence;
+            await refreshRow(r, proxyTpl);
+          } else {
+            r.warn = r.warn || 'no CRIS match';
+          }
+        } catch (e) {
+          r.discovering = false;
+          r.warn = 'search error: ' + (e.message || e);
+        }
+      });
+    }
   }
 
   async function refreshRow(row, proxyTpl) {
@@ -509,6 +628,7 @@
     // Low-level exports (handy for testing / extension)
     fetchText, parseTeamPage, parseProfilePage, parseBibtex,
     computeStats, nameMatches, loadPerson, renderTable,
+    searchCrisIds, discoverCrisId,
     // High-level driver
     run,
     DEFAULT_PROXIES,
