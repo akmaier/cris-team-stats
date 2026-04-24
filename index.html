@@ -54,7 +54,8 @@ button to get a copy-pasteable HTML block for your WordPress site.</p>
       or <code>{URL_RAW}</code> for raw. The JSON envelope from
       <code>allorigins.win/get</code> is automatically unwrapped.</p>
     <label for="libUrl">cris-team-stats.js URL</label>
-    <input id="libUrl" type="text" value="https://cdn.jsdelivr.net/gh/akmaier/cris-team-stats@main/cris-team-stats.js" spellcheck="false">
+    <input id="libUrl" type="text" value="https://cdn.jsdelivr.net/gh/akmaier/cris-team-stats@v0.1.0/cris-team-stats.js" spellcheck="false">
+    <p class="muted">Pinned version tag — change to <code>@main</code> for the bleeding edge (warning: jsDelivr caches the <code>@main</code> URL for up to 12&nbsp;h after each push).</p>
   </details>
 
   <div class="row" style="margin-top: 1rem;">
@@ -160,16 +161,15 @@ button to get a copy-pasteable HTML block for your WordPress site.</p>
   function buildWordPressSnippet({ teamUrl, mapping, libUrl, proxy }) {
     // Self-contained: one <div>, one <script src>, one inline initialiser.
     // We inject the config as a JSON string so WP doesn't mangle quotes.
-    const config = JSON.stringify({ teamUrl, mapping, proxyTpl: proxy });
+    // proxyTpl is only set when the user explicitly overrode it; otherwise
+    // we omit it and let the library use its built-in fallback list.
+    const cfg = { teamUrl, mount: "#cris-team-stats", mapping };
+    if (proxy) cfg.proxyTpl = proxy;
     return [
       '<div id="cris-team-stats"></div>',
       '<script src="' + libUrl + '"><\/script>',
       '<script>',
-      '  (function () {',
-      '    var cfg = ' + config + ';',
-      '    cfg.mount = "#cris-team-stats";',
-      '    CrisTeamStats.run(cfg);',
-      '  })();',
+      '  CrisTeamStats.run(' + JSON.stringify(cfg, null, 2).replace(/\n/g, '\n  ') + ');',
       '<\/script>'
     ].join('\n');
   }
