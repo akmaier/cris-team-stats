@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CRIS team stats — builder</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    h1  { font-size: 1.4rem; margin-bottom: 0.2rem; }
+    p.lede { color: #555; margin-top: 0; }
+    fieldset { border: 1px solid #ccc; border-radius: 6px; padding: 0.8rem 1rem; margin: 1rem 0; }
+    legend { padding: 0 0.4rem; font-weight: 600; }
+    label { display: block; font-weight: 600; margin: 0.4rem 0 0.2rem; font-size: 0.9em; }
+    input[type=text], textarea { width: 100%; box-sizing: border-box; padding: 0.4rem; border: 1px solid #bbb; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+    textarea { min-height: 8em; resize: vertical; }
+    button { background: #04316a; color: #fff; border: 0; border-radius: 4px; padding: 0.5rem 1rem; font-weight: 600; cursor: pointer; }
+    button:hover { background: #052957; }
+    button.secondary { background: #666; }
+    .row { display: flex; gap: 0.5rem; align-items: center; }
+    #out { margin-top: 1rem; }
+    #wp-out { margin-top: 1rem; }
+    #wp-out textarea { min-height: 10em; background: #f8f8f8; }
+    .muted { color: #666; font-size: 0.85em; }
+    summary { cursor: pointer; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<h1>CRIS team stats — builder</h1>
+<p class="lede">Paste an FAU team-listing URL and get a sortable table of each
+member's CRIS stats. Use the <strong>Generate WordPress snippet</strong>
+button to get a copy-pasteable HTML block for your WordPress site.</p>
+
+<fieldset>
+  <legend>Configuration</legend>
+
+  <label for="teamUrl">FAU team-page URL</label>
+  <input id="teamUrl" type="text" value="https://lme.tf.fau.de/person/" spellcheck="false">
+
+  <label for="mapping">Optional <code>FAU-slug → CRIS-ID</code> mapping (JSON)</label>
+  <textarea id="mapping" spellcheck="false" placeholder='e.g. {"andreas-maier": 101449090, "vincent-christlein": 123456789}'></textarea>
+
+  <details>
+    <summary>Advanced</summary>
+    <label for="proxy">CORS proxy (must allow GET and expose <code>Access-Control-Allow-Origin</code>)</label>
+    <input id="proxy" type="text" value="https://api.allorigins.win/get?url={URL}" spellcheck="false">
+    <p class="muted">The <code>{URL}</code> placeholder is replaced with the URL-encoded target URL. For
+      <code>api.allorigins.win/get?url=</code> the library automatically unwraps the JSON envelope.</p>
+    <label for="libUrl">cris-team-stats.js URL</label>
+    <input id="libUrl" type="text" value="https://cdn.jsdelivr.net/gh/akmaier/cris-team-stats@main/cris-team-stats.js" spellcheck="false">
+  </details>
+
+  <div class="row" style="margin-top: 1rem;">
+    <button id="build">Build table</button>
+    <button id="wpbtn" class="secondary" type="button">Generate WordPress snippet</button>
+    <span id="status" class="muted"></span>
+  </div>
+</fieldset>
+
+<div id="out"></div>
+
+<fieldset id="wp-out" hidden>
+  <legend>WordPress snippet</legend>
+  <p class="muted">Copy-paste this into a WordPress <em>Custom HTML</em> block. It
+    loads the library from jsDelivr and renders the table using the same
+    configuration shown above.</p>
+  <textarea id="wp-code" readonly spellcheck="false"></textarea>
+  <div class="row" style="margin-top:0.5rem;">
+    <button id="wp-copy" type="button">Copy to clipboard</button>
+    <span id="wp-status" class="muted"></span>
+  </div>
+</fieldset>
+
+<script>
+  // Lazy-load the library. We keep this file plain-HTML so that anyone can
+  // download a single file and use it; the heavy lifting lives in the URL
+  // configured above (defaults to jsDelivr).
+  function loadLib(src) {
+    return new Promise((resolve, reject) => {
+      if (window.CrisTeamStats) return resolve(window.CrisTeamStats);
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload  = () => window.CrisTeamStats ? resolve(window.CrisTeamStats) : reject(new Error('lib loaded but no global'));
+      s.onerror = () => reject(new Error('failed to load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  function parseMapping(text) {
+    text = (text || '').trim();
+    if (!text) return {};
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error('Mapping is not valid JSON: ' + e.message); }
+  }
+
+  const $ = (sel) => document.querySelector(sel);
+
+  $('#build').addEventListener('click', async () => {
+    const teamUrl = $('#teamUrl').value.trim();
+    const libUrl  = $('#libUrl').value.trim();
+    const proxy   = $('#proxy').value.trim() || undefined;
+    const status  = $('#status');
+    let mapping;
+    try { mapping = parseMapping($('#mapping').value); }
+    catch (e) { status.textContent = e.message; status.style.color = '#a00'; return; }
+    status.style.color = ''; status.textContent = 'Loading library…';
+    try {
+      const lib = await loadLib(libUrl);
+      status.textContent = 'Fetching data…';
+      await lib.run({ teamUrl, mount: '#out', mapping, proxyTpl: proxy });
+      status.textContent = 'Done.';
+    } catch (e) {
+      status.style.color = '#a00';
+      status.textContent = 'Error: ' + e.message;
+    }
+  });
+
+  $('#wpbtn').addEventListener('click', () => {
+    const teamUrl = $('#teamUrl').value.trim();
+    const libUrl  = $('#libUrl').value.trim();
+    const proxy   = $('#proxy').value.trim() || 'https://api.allorigins.win/get?url={URL}';
+    let mapping;
+    try { mapping = parseMapping($('#mapping').value); }
+    catch (e) { $('#status').style.color = '#a00'; $('#status').textContent = e.message; return; }
+    const html = buildWordPressSnippet({ teamUrl, mapping, libUrl, proxy });
+    $('#wp-out').hidden = false;
+    $('#wp-code').value = html;
+  });
+
+  $('#wp-copy').addEventListener('click', async () => {
+    const area = $('#wp-code');
+    try {
+      await navigator.clipboard.writeText(area.value);
+      $('#wp-status').textContent = 'Copied.';
+    } catch (_) {
+      area.select(); document.execCommand('copy');
+      $('#wp-status').textContent = 'Copied (fallback).';
+    }
+    setTimeout(() => { $('#wp-status').textContent = ''; }, 2000);
+  });
+
+  function buildWordPressSnippet({ teamUrl, mapping, libUrl, proxy }) {
+    // Self-contained: one <div>, one <script src>, one inline initialiser.
+    // We inject the config as a JSON string so WP doesn't mangle quotes.
+    const config = JSON.stringify({ teamUrl, mapping, proxyTpl: proxy });
+    return [
+      '<div id="cris-team-stats"></div>',
+      '<script src="' + libUrl + '"><\/script>',
+      '<script>',
+      '  (function () {',
+      '    var cfg = ' + config + ';',
+      '    cfg.mount = "#cris-team-stats";',
+      '    CrisTeamStats.run(cfg);',
+      '  })();',
+      '<\/script>'
+    ].join('\n');
+  }
+</script>
+</body>
+</html>

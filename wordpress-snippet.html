@@ -1,0 +1,19 @@
+<!--
+  cris-team-stats — WordPress-ready snippet.
+
+  Paste this block into a WordPress "Custom HTML" block. Fill in your
+  `teamUrl` and (optionally) a `mapping` of FAU slugs to CRIS person IDs.
+  The library is pulled from jsDelivr so you don't need to host anything
+  yourself, but WordPress sometimes strips `<script>` inside "Classic" blocks;
+  use the block editor's "Custom HTML" block for reliable behaviour.
+-->
+<div id="cris-team-stats"></div>
+<script src="https://cdn.jsdelivr.net/gh/akmaier/cris-team-stats@main/cris-team-stats.js"></script>
+<script>
+  CrisTeamStats.run({
+    teamUrl:  "https://lme.tf.fau.de/person/",
+    mount:    "#cris-team-stats",
+    mapping:  { /* "andreas-maier": 101449090, "vincent-christlein": 123456789 */ },
+    proxyTpl: "https://api.allorigins.win/get?url={URL}"
+  });
+</script>
