@@ -39,7 +39,10 @@ button to get a copy-pasteable HTML block for your WordPress site.</p>
   <input id="teamUrl" type="text" value="https://lme.tf.fau.de/person/" spellcheck="false">
 
   <label for="mapping">Optional <code>FAU-slug → CRIS-ID</code> mapping (JSON)</label>
-  <textarea id="mapping" spellcheck="false" placeholder='e.g. {"andreas-maier": 101449090, "vincent-christlein": 123456789}'></textarea>
+  <textarea id="mapping" spellcheck="false" placeholder='e.g. {"andreas-maier": 101449090, "vincent-christlein": 123456789}'>{
+  "andreas-maier": 101449090
+}</textarea>
+  <p class="muted">Rows with unknown CRIS IDs still appear; fill the ID in the inline input next to the name and the row refreshes.</p>
 
   <details>
     <summary>Advanced</summary>
