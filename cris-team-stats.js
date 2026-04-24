@@ -332,13 +332,14 @@
       .trim();
   }
 
+  // Returns an array of IDs if the search succeeded (possibly empty).
+  // THROWS if the fetch itself failed, so callers can distinguish a
+  // transient proxy/rate-limit error from a genuine no-match.
   async function searchCrisIds(fullName, proxyTpl) {
     const q = cleanQueryName(fullName);
     if (!q) return [];
     const url = 'https://cris.fau.de/search?query=' + encodeURIComponent(q);
-    let html;
-    try { html = await fetchText(url, proxyTpl); }
-    catch (_) { return []; }
+    const html = await fetchText(url, proxyTpl);
     const ids = [];
     const seen = new Set();
     const rx = /\/persons\/(\d+)\/?/g;
@@ -353,8 +354,14 @@
   // shares a host with the FAU person URL (and ideally has a matching name).
   // Falls back to the first candidate if no verifier matches, so the user
   // still gets a row to review.
+  // Returns:
+  //   { id, confidence: 'high' | 'name-only' | 'guess', candidates }  on match
+  //   { id: null, confidence: 'none',   candidates: [] }                on empty search
+  //   { id: null, confidence: 'error',  error }                         on fetch failure
   async function discoverCrisId(person, proxyTpl) {
-    const ids = await searchCrisIds(person.name, proxyTpl);
+    let ids;
+    try { ids = await searchCrisIds(person.name, proxyTpl); }
+    catch (e) { return { id: null, confidence: 'error', error: e.message || String(e), candidates: [] }; }
     if (!ids.length) return { id: null, confidence: 'none', candidates: [] };
     let fauHost;
     try { fauHost = new URL(person.url).host; } catch (_) { fauHost = null; }
@@ -495,6 +502,17 @@
             span.className = 'muted';
             span.style.color = '#888';
             td.appendChild(span);
+          } else if (row.searchError) {
+            const btn = document.createElement('button');
+            btn.textContent = 'Retry search';
+            btn.style.font = 'inherit';
+            btn.style.padding = '2px 6px';
+            btn.style.cursor = 'pointer';
+            btn.title = row.searchError;
+            btn.addEventListener('click', () => {
+              if (typeof state.retryRow === 'function') state.retryRow(row);
+            });
+            td.appendChild(btn);
           } else {
             const inp = document.createElement('input');
             inp.type = 'number';
@@ -592,26 +610,39 @@
 
     await workQueue(rows.filter((r) => r.crisId), (r) => refreshRow(r, proxyTpl));
 
-    if (autoDiscover) {
-      const unknown = rows.filter((r) => !r.crisId);
-      await workQueue(unknown, async (r) => {
-        r.discovering = true; renderTable(mount, rows, state);
-        try {
-          const d = await discoverCrisId(r.person, proxyTpl);
-          r.discovering = false;
-          if (d.id) {
-            r.crisId = d.id;
-            r.confidence = d.confidence;
-            await refreshRow(r, proxyTpl);
-          } else {
-            r.warn = r.warn || 'no CRIS match';
-          }
-        } catch (e) {
-          r.discovering = false;
-          r.warn = 'search error: ' + (e.message || e);
+    async function discoverRow(r) {
+      r.discovering = true; r.warn = null; renderTable(mount, rows, state);
+      try {
+        const d = await discoverCrisId(r.person, proxyTpl);
+        r.discovering = false;
+        if (d.id) {
+          r.crisId = d.id;
+          r.confidence = d.confidence;
+          await refreshRow(r, proxyTpl);
+        } else if (d.confidence === 'error') {
+          r.warn = 'search failed (retry)';
+          r.searchError = d.error;
+        } else {
+          r.warn = 'no CRIS match';
         }
-      });
+      } catch (e) {
+        r.discovering = false;
+        r.warn = 'search error: ' + (e.message || e);
+      }
     }
+
+    if (autoDiscover) {
+      // Pass 1: discover every unknown row (concurrent).
+      await workQueue(rows.filter((r) => !r.crisId), discoverRow);
+      // Pass 2: one more serial attempt for rows that failed with a
+      // proxy/rate-limit error. Serial so we don't hammer the same proxy.
+      const retries = rows.filter((r) => !r.crisId && r.searchError);
+      for (const r of retries) {
+        await discoverRow(r);
+        renderTable(mount, rows, state);
+      }
+    }
+    state.retryRow = (row) => discoverRow(row).then(() => renderTable(mount, rows, state));
   }
 
   async function refreshRow(row, proxyTpl) {
