@@ -82,12 +82,23 @@ button to get a copy-pasteable HTML block for your WordPress site.</p>
   // Lazy-load the library. We keep this file plain-HTML so that anyone can
   // download a single file and use it; the heavy lifting lives in the URL
   // configured above (defaults to jsDelivr).
+  // Always (re)load the library so the user can hot-swap libUrl without
+  // refreshing the page — and so we never keep serving a stale cached
+  // version after a CDN purge.
+  let _lastLoadedLib = null;
   function loadLib(src) {
     return new Promise((resolve, reject) => {
-      if (window.CrisTeamStats) return resolve(window.CrisTeamStats);
+      if (_lastLoadedLib === src && window.CrisTeamStats) return resolve(window.CrisTeamStats);
+      delete window.CrisTeamStats;
+      document.querySelectorAll('script[data-cris-lib]').forEach((s) => s.remove());
+      const bust = (src.includes('?') ? '&' : '?') + '_=' + Date.now();
       const s = document.createElement('script');
-      s.src = src;
-      s.onload  = () => window.CrisTeamStats ? resolve(window.CrisTeamStats) : reject(new Error('lib loaded but no global'));
+      s.src = src + bust;
+      s.dataset.crisLib = '1';
+      s.onload  = () => {
+        if (window.CrisTeamStats) { _lastLoadedLib = src; resolve(window.CrisTeamStats); }
+        else reject(new Error('library loaded but did not expose CrisTeamStats global'));
+      };
       s.onerror = () => reject(new Error('failed to load ' + src));
       document.head.appendChild(s);
     });
