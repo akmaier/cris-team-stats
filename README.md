@@ -1,5 +1,7 @@
 # cris-team-stats
 
+**Live demo:** <https://akmaier.github.io/cris-team-stats/>
+
 A pure-JavaScript plugin that takes a **FAU team/person listing page** (e.g. the
 [Pattern Recognition Lab team](https://lme.tf.fau.de/person/)) and builds a
 sortable table of each person's research output, pulled live from **FAU CRIS**
