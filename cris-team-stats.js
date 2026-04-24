@@ -229,33 +229,44 @@
   // last-name tokens.
   // Common German academic-title prefixes seen on FAU pages.
   const TITLE_RX = /\b(prof|priv|pd|apl|univ|em|emer|emeritus|hon|dr|ing|phil|rer|nat|med|habil|mult|hc|h\.c|dipl|msc|m\.sc|bsc|b\.sc|ph\.d|phd|mag|ma|ba|dr\.-ing|drmed|drphil|drrerpol|drrernat|drrernatmed)\b\.?/gi;
+  // Titles that split into multiple tokens after punctuation normalisation:
+  // "M. Sc." → "M Sc", "Ph. D." → "Ph D", "h.c." → "h c", etc.
+  const SPLIT_TITLE_RX = /\b(m\s*sc|b\s*sc|m\s*a|b\s*a|ph\s*d|h\s*c|dr\s*ing|dr\s*med|dr\s*phil|dr\s*rer|rer\s*nat|rer\s*pol|habil|em|emer|emeritus|honoris\s*causa)\b/gi;
   function normaliseName(s) {
     return (s || '')
       .toLowerCase()
       .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')  // strip diacritics
       .replace(TITLE_RX, ' ')                   // strip titles WITH their dots
-      .replace(/[^\p{L}\s,]/gu, ' ')            // then drop remaining punctuation
-      .replace(TITLE_RX, ' ')                   // catch leftovers after punctuation split
+      .replace(/[^\p{L}\s,]/gu, ' ')            // drop remaining punctuation (keep comma)
+      .replace(SPLIT_TITLE_RX, ' ')             // catch M Sc / Ph D / h c / dr ing etc.
+      .replace(TITLE_RX, ' ')                   // one more pass
+      .replace(/\s+,\s+/g, ', ')                // compact commas
       .replace(/\s+/g, ' ')
+      .replace(/,\s*$/, '')                     // trailing "," (from stripped suffix titles)
       .trim();
   }
-  function lastNameOf(n) {
+  // Split into (last, first). Handles both "Last, First" and "First Last".
+  // A bare comma with nothing after it means the suffix was a stripped title
+  // (e.g. "Marcel Dreier, M. Sc." → "marcel dreier") — treat as space form.
+  function splitName(n) {
     n = normaliseName(n);
-    if (!n) return '';
-    if (n.includes(',')) return n.split(',')[0].trim();
-    const parts = n.split(' ').filter(Boolean);
-    return parts[parts.length - 1] || '';
-  }
-  function firstNameOf(n) {
-    n = normaliseName(n);
-    if (!n) return '';
+    if (!n) return { last: '', first: '' };
     if (n.includes(',')) {
-      const rest = n.split(',')[1] || '';
-      return (rest.trim().split(' ').filter(Boolean)[0] || '');
+      const [left, right = ''] = n.split(',', 2).map((s) => s.trim());
+      if (right) {
+        return { last: left, first: right.split(' ').filter(Boolean)[0] || '' };
+      }
+      // Comma at end — fall through to space-separated form.
+      n = left;
     }
     const parts = n.split(' ').filter(Boolean);
-    return parts.length > 1 ? parts[0] : '';
+    return {
+      last:  parts[parts.length - 1] || '',
+      first: parts.length > 1 ? parts[0] : '',
+    };
   }
+  function lastNameOf(n)  { return splitName(n).last; }
+  function firstNameOf(n) { return splitName(n).first; }
   function nameMatches(bibAuthor, person) {
     const bln = lastNameOf(bibAuthor);
     const bfn = firstNameOf(bibAuthor);
@@ -313,9 +324,10 @@
     // search index matches exact characters. We only strip titles +
     // punctuation, not letter accents.
     return (full || '')
-      .replace(TITLE_RX, ' ')
-      .replace(/[^\p{L}\s]/gu, ' ')
-      .replace(TITLE_RX, ' ')
+      .replace(TITLE_RX, ' ')              // titles with their dots intact
+      .replace(/[^\p{L}\s]/gu, ' ')        // punctuation → space
+      .replace(SPLIT_TITLE_RX, ' ')        // catch titles that split on punctuation
+      .replace(TITLE_RX, ' ')              // one more pass
       .replace(/\s+/g, ' ')
       .trim();
   }
